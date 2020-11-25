@@ -31,8 +31,9 @@ import setuptools.command.install as install
 from distutils import spawn
 import distutils.command.build as build
 import distutils.command.clean as clean
+import wheel.bdist_wheel as bdist_wheel
 
-__version__ = '0.7'
+__version__ = '0.8.0-dev.2'
 MP_ROOT_PATH = os.path.dirname(os.path.abspath(__file__))
 ROOT_INIT_PY = os.path.join(MP_ROOT_PATH, '__init__.py')
 MP_DIR_INIT_PY = os.path.join(MP_ROOT_PATH, 'mediapipe/__init__.py')
@@ -137,6 +138,9 @@ class GeneratePyProtos(setuptools.Command):
           '-compiler\' (linux) or \'brew install protobuf\'(macos) to install '
           'protobuf compiler binary.')
       sys.exit(-1)
+    self._protoc_include_paths = []
+    if os.environ.get('PROTOC_INCLUDE_PATH'):
+       self._protoc_include_paths = os.environ['PROTOC_INCLUDE_PATH'].split(':')
     # Build framework and calculator protos.
     if not os.path.exists(MP_CALCULATORS_DIR_INIT_PY):
       sys.stderr.write('adding __init__ file: %s\n' %
@@ -176,7 +180,8 @@ class GeneratePyProtos(setuptools.Command):
         sys.stderr.write('cannot find required file: %s\n' % source)
         sys.exit(-1)
 
-      protoc_command = [self._protoc, '-I.', '--python_out=.', source]
+      protoc_includes = ['-I' + p for p in self._protoc_include_paths]
+      protoc_command = [self._protoc, '-I.', *protoc_includes, '--python_out=.', source]
       if subprocess.call(protoc_command) != 0:
         sys.exit(-1)
 
@@ -333,6 +338,31 @@ class Install(install.install):
     self.run_command('remove_generated')
 
 
+class BdistWheel(bdist_wheel.bdist_wheel):
+  """Install command that builds binary graphs and extension and does a cleanup afterwards."""
+
+  user_options = bdist_wheel.bdist_wheel.user_options + [
+      ('link-opencv', None, 'if true, use the installed opencv library.'),
+  ]
+  boolean_options = bdist_wheel.bdist_wheel.boolean_options + ['link-opencv']
+
+  def initialize_options(self):
+    self.link_opencv = False
+    bdist_wheel.bdist_wheel.initialize_options(self)
+
+  def finalize_options(self):
+    bdist_wheel.bdist_wheel.finalize_options(self)
+
+  def run(self):
+    build_ext_obj = self.distribution.get_command_obj('build_ext')
+    build_ext_obj.link_opencv = self.link_opencv
+    build_obj = self.distribution.get_command_obj('build')
+    build_obj.link_opencv = self.link_opencv
+    self.run_command('modify_inits')
+    bdist_wheel.bdist_wheel.run(self)
+    self.run_command('remove_generated')
+
+
 class RemoveGenerated(clean.clean):
   """Remove the generated files."""
 
@@ -374,6 +404,7 @@ setuptools.setup(
         'build_ext': BuildBazelExtension,
         'install': Install,
         'remove_generated': RemoveGenerated,
+        'bdist_wheel': BdistWheel,
     },
     ext_modules=[
         BazelExtension('//mediapipe/python:_framework_bindings'),
